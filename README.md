@@ -2,7 +2,9 @@
 
 A cross‑platform, professional Bubble Tea UI installer for the LarGo CLI. It prepares your environment, installs the LarGo binary via `go install`, and verifies that `largo` is available.
 
-![LarGo Installer UI](largo_cli.png)
+<p align="center">
+  <img src="largo_cli.png" alt="LarGo Installer UI" width="800" />
+</p>
 
 ## Features
 - Clean Bubble Tea UI with centered header, step list, and live logs
