@@ -3,13 +3,16 @@
 package install
 
 import (
-    "bytes"
     "fmt"
     "io"
     "os"
-    "os/exec"
     "path/filepath"
     "strings"
+    "syscall"
+    "unsafe"
+
+    "golang.org/x/sys/windows"
+    "golang.org/x/sys/windows/registry"
 )
 
 func ensurePathWindows(bin string, log io.Writer) error {
@@ -18,38 +21,29 @@ func ensurePathWindows(bin string, log io.Writer) error {
         fmt.Fprintf(log, "✓ %s already on current PATH (session).\n", bin)
     }
 
-    // Try Windows PowerShell or PowerShell 7 (pwsh)
-    psExe := ""
-    if p, err := exec.LookPath("powershell"); err == nil { psExe = p } else if p, err := exec.LookPath("pwsh"); err == nil { psExe = p }
-
-    // Append to User PATH via .NET API
-    psScript := `[string]$bin="` + escapePS(bin) + `";
-$user=[Environment]::GetEnvironmentVariable("Path","User");
-if([string]::IsNullOrWhiteSpace($user)){$user=""}
-$items=@($user.Split(";") | ForEach-Object { $_.TrimEnd("\\") } | Where-Object { $_ -ne "" })
-if(-not ($items -contains $bin.TrimEnd("\\"))){
-  $new=($user.TrimEnd(";")+";"+$bin).Trim(";")
-  [Environment]::SetEnvironmentVariable("Path",$new,"User")
-  "UPDATED"
-} else { "UNCHANGED" }`
-
-    if psExe != "" {
-        cmd := exec.Command(psExe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psScript)
-        out, err := cmd.CombinedOutput()
-        if err == nil && strings.Contains(strings.ToUpper(string(out)), "UPDATED") {
-            fmt.Fprintf(log, "✓ Ensured %s in USER Path (open a NEW terminal)\n", bin)
+    // Read current User PATH from registry
+    userPath, err := getUserPath()
+    if err != nil {
+        // If we can't read but the session PATH works, don't hard fail
+        if onPath(bin, os.Getenv("Path")) {
+            fmt.Fprintf(log, "! Could not read User PATH, but session PATH works. Skipping persist.\n")
             return nil
         }
-        // fall back to registry
+        return fmt.Errorf("failed to read User PATH: %w", err)
     }
 
-    current, _ := readUserPathFromReg()
-    if !pathListContains(current, bin) {
-        updated := appendPath(current, bin)
-        if err := writeUserPathWithReg(updated); err != nil {
-            return fmt.Errorf("failed to set user PATH via reg.exe: %w", err)
+    // Update if missing
+    if !pathListContains(userPath, bin) {
+        updated := appendPath(userPath, bin)
+        if err := setUserPath(updated); err != nil {
+            // If current session already has it, do not fail the whole step
+            if onPath(bin, os.Getenv("Path")) {
+                fmt.Fprintf(log, "! Could not persist PATH, but it's available in this session. Open a new terminal after install. (%v)\n", err)
+                return nil
+            }
+            return fmt.Errorf("failed to set User PATH: %w", err)
         }
-        fmt.Fprintf(log, "✓ Ensured %s in USER Path via registry (open a NEW terminal)\n", bin)
+        fmt.Fprintf(log, "✓ Ensured %s in USER Path (open a NEW terminal)\n", bin)
     } else {
         fmt.Fprintf(log, "✓ User PATH already contains %s\n", bin)
     }
@@ -59,53 +53,79 @@ if(-not ($items -contains $bin.TrimEnd("\\"))){
 // OS-selected entry point used from install.EnsurePath
 func ensurePathOS(bin string, log io.Writer) error { return ensurePathWindows(bin, log) }
 
-func readUserPathFromReg() (string, error) {
-    cmd := exec.Command("reg", "query", `HKCU\\Environment`, "/v", "Path")
-    out, err := cmd.CombinedOutput()
+// ---- Registry helpers ----
+func getUserPath() (string, error) {
+    k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.QUERY_VALUE)
     if err != nil {
-        if bytes.Contains(out, []byte("ERROR:")) { return "", nil }
-        return "", fmt.Errorf("reg query failed: %v - %s", err, string(out))
+        return "", err
     }
-    lines := strings.Split(string(out), "\n")
-    for _, ln := range lines {
-        if strings.Contains(ln, "REG_") {
-            parts := strings.Fields(ln)
-            if len(parts) >= 3 { return strings.Join(parts[2:], " "), nil }
-        }
+    defer k.Close()
+    s, _, err := k.GetStringValue("Path")
+    if err == registry.ErrNotExist {
+        return "", nil
     }
-    return "", nil
+    return s, err
 }
 
-func writeUserPathWithReg(val string) error {
-    cmd := exec.Command("reg", "add", `HKCU\\Environment`, "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", val, "/f")
-    out, err := cmd.CombinedOutput()
+func setUserPath(val string) error {
+    k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`, registry.SET_VALUE)
     if err != nil {
-        return fmt.Errorf("reg add failed: %v - %s", err, string(out))
+        return err
     }
+    defer k.Close()
+    // Use ExpandString so references like %USERPROFILE% are preserved if present
+    if err := k.SetExpandStringValue("Path", val); err != nil {
+        return err
+    }
+    // Notify the system so new processes see the change
+    broadcastEnvChange()
     return nil
 }
 
-func escapePS(path string) string { return strings.ReplaceAll(path, `"`, "`\"") }
+func broadcastEnvChange() {
+    const HWND_BROADCAST = 0xFFFF
+    const WM_SETTINGCHANGE = 0x1A
+    user32 := windows.NewLazySystemDLL("user32.dll")
+    proc := user32.NewProc("SendMessageTimeoutW")
+    if proc.Find() != nil {
+        return
+    }
+    // SMTO_ABORTIFHUNG (0x0002)
+    proc.Call(uintptr(HWND_BROADCAST), uintptr(WM_SETTINGCHANGE), 0,
+        uintptr(unsafe.Pointer(syscall.StringToUTF16Ptr("Environment"))),
+        uintptr(0x0002), uintptr(5000), 0)
+}
 
+// ---- Utilities ----
 func pathListContains(list, item string) bool {
     item = strings.TrimRight(strings.ToLower(item), `\\`)
     for _, p := range strings.Split(list, ";") {
         p = strings.TrimSpace(p)
-        if p == "" { continue }
-        if strings.TrimRight(strings.ToLower(p), `\\`) == item { return true }
+        if p == "" {
+            continue
+        }
+        if strings.TrimRight(strings.ToLower(p), `\\`) == item {
+            return true
+        }
     }
     return false
 }
 
 func appendPath(list, item string) string {
     list = strings.Trim(list, ";")
-    if list == "" { return item }
+    if list == "" {
+        return item
+    }
     return list + ";" + item
 }
 
 func onPath(bin, PATH string) bool {
     parts := strings.Split(PATH, ";")
-    for _, p := range parts { if sameDir(p, bin) { return true } }
+    for _, p := range parts {
+        if sameDir(p, bin) {
+            return true
+        }
+    }
     return false
 }
 

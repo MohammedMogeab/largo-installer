@@ -8,7 +8,7 @@ A cross‑platform, professional Bubble Tea UI installer for the LarGo CLI. It p
 
 ## Features
 - Clean Bubble Tea UI with centered header, step list, and live logs
-- Safe PATH updates on Windows (PowerShell + registry fallback)
+- Safe PATH updates on Windows (registry + environment broadcast)
 - PATH updates on Unix shells (adds to a shell RC file without duplicates)
 - Clear status and guidance; UI stays open after completion
 - Small, maintainable codebase split into `cmd/` and `internal/`
@@ -69,7 +69,6 @@ We welcome contributions! Please see CONTRIBUTING.md for development setup, codi
 ## Roadmap
 - Optional “download prebuilt binary” path (no Go toolchain needed)
 - Flags: `--bin`, `--no-path`, `--use-go`, `--verbose`
-- Windows: broadcast environment change so new shells see PATH immediately
 
 ## License
 MIT — see LICENSE
