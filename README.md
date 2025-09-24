@@ -13,8 +13,34 @@ A cross‑platform, professional Bubble Tea UI installer for the LarGo CLI. It p
 - Clear status and guidance; UI stays open after completion
 - Small, maintainable codebase split into `cmd/` and `internal/`
 
+## Installation
+
+LarGo requires Go version 1.24 or higher to run. If you need to install or upgrade Go, visit the official Go download page.
+
+To use the LarGo CLI, you must first install and run the LarGo Installer, which will set up your environment and install `largo` for you.
+
+Install the installer binary:
+
+```
+go install github.com/MohammedMogeab/largo-installer/cmd/largo-installer@latest
+```
+
+Run the installer to install LarGo:
+
+```
+largo-installer
+# or specify a version/module explicitly
+largo-installer --largo-version v0.1.0 --module github.com/MohammedMogeab/largo/cmd/largo
+```
+
+After installation, open a new terminal if PATH was updated, then verify:
+
+```
+largo version
+```
+
 ## Quick Start (from source)
-- Requirements: Go 1.22+
+- Requirements: Go 1.24+
 - Fetch deps: `go mod tidy`
 - Run the installer: `go run ./cmd/largo-installer`
 
